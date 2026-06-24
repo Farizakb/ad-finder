@@ -5,8 +5,8 @@ package fingerprint
 //
 // Hash packing (32 bits):
 //
-//	bits [20:29] = anchor frequency (10 bits)
-//	bits [10:19] = target frequency (10 bits)
+//	bits [22:31] = anchor frequency (10 bits)
+//	bits [12:21] = target frequency (10 bits)
 //	bits [0:11]  = delta time in frames (12 bits)
 func GenerateHashes(peaks []Peak, fanOut int, targetZoneFrames int) FingerprintMap {
 	fp := make(FingerprintMap)
@@ -29,7 +29,7 @@ func GenerateHashes(peaks []Peak, fanOut int, targetZoneFrames int) FingerprintM
 			f2 := uint32(target.Bin) & 0x3FF
 			d := uint32(dt) & 0xFFF
 
-			hash := (f1 << 20) | (f2 << 10) | d
+			hash := (f1 << 22) | (f2 << 12) | d
 			timeOffset := uint32(anchor.Frame)
 
 			fp[hash] = append(fp[hash], timeOffset)

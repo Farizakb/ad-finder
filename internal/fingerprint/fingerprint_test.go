@@ -90,15 +90,25 @@ func TestGenerateHashesProducesHashes(t *testing.T) {
 
 func TestFingerprintEndToEnd(t *testing.T) {
 	sampleRate := 11025
-	n := sampleRate * 5
+	n := sampleRate * 10
 	samples := make([]float64, n)
+	// Generate a richer signal: multiple tones that change over time,
+	// simulating real audio with varying spectral content.
+	freqs := []float64{220, 440, 880, 1200, 2000, 3500}
 	for i := range samples {
 		t1 := float64(i) / float64(sampleRate)
-		samples[i] = 0.5*math.Sin(2*math.Pi*440*t1) + 0.5*math.Sin(2*math.Pi*1000*t1)
+		for j, f := range freqs {
+			// Each tone fades in/out at different rates to create spectral variation.
+			amp := 0.3 * math.Sin(math.Pi*float64(j+1)*t1/5.0)
+			if amp < 0 {
+				amp = -amp
+			}
+			samples[i] += amp * math.Sin(2*math.Pi*f*t1)
+		}
 	}
 
 	fp := Fingerprint(samples)
 	if len(fp) == 0 {
-		t.Fatal("expected non-empty fingerprints from two-tone signal")
+		t.Fatal("expected non-empty fingerprints from multi-tone signal")
 	}
 }

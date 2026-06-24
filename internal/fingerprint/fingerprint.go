@@ -5,8 +5,8 @@ type FingerprintMap map[uint32][]uint32
 
 const (
 	DefaultWindowSize       = 4096
-	DefaultHopSize          = 2048
-	DefaultNeighborhoodSize = 20
+	DefaultHopSize          = 1024
+	DefaultNeighborhoodSize = 10
 	DefaultMinAmplitude     = 10.0
 	DefaultFanOut           = 15
 	DefaultTargetZone       = 200

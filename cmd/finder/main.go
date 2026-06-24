@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/farizakb/ad-finder/internal/finder"
+	"github.com/farizakb/ad-finder/internal/fingerprint"
 )
 
 func main() {
@@ -67,13 +68,29 @@ func runBatch(recordsDir, advertsDir string, numWorkers int, outputFmt string) {
 	fmt.Fprintf(os.Stderr, "Batch: %d recordings × %d adverts = %d pairs, %d workers\n",
 		len(records), len(adverts), totalPairs, numWorkers)
 
+	// Pre-fingerprint all recordings once (the expensive part),
+	// then reuse each fingerprint across all ads.
+	fmt.Fprintf(os.Stderr, "Fingerprinting %d recordings...\n", len(records))
+	recFPs := make(map[string]fingerprint.FingerprintMap)
+	for _, rec := range records {
+		fp, err := finder.FingerprintRecord(rec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error fingerprinting %s: %v\n", filepath.Base(rec), err)
+			continue
+		}
+		recFPs[rec] = fp
+		fmt.Fprintf(os.Stderr, "  ✓ %s\n", filepath.Base(rec))
+	}
+
 	type pair struct {
-		record, advert string
+		record string
+		recFP  fingerprint.FingerprintMap
+		advert string
 	}
 	work := make(chan pair, totalPairs)
-	for _, rec := range records {
+	for rec, fp := range recFPs {
 		for _, adv := range adverts {
-			work <- pair{rec, adv}
+			work <- pair{rec, fp, adv}
 		}
 	}
 	close(work)
@@ -89,7 +106,7 @@ func runBatch(recordsDir, advertsDir string, numWorkers int, outputFmt string) {
 		go func() {
 			defer wg.Done()
 			for p := range work {
-				matches, err := finder.FindAdvertInRecord(p.record, p.advert)
+				matches, err := finder.FindAdvertWithFingerprint(p.recFP, p.advert)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error processing %s × %s: %v\n",
 						filepath.Base(p.record), filepath.Base(p.advert), err)
