@@ -7,9 +7,9 @@ const (
 	DefaultWindowSize       = 4096
 	DefaultHopSize          = 1024
 	DefaultNeighborhoodSize = 10
-	DefaultMinAmplitude     = 10.0
-	DefaultFanOut           = 15
-	DefaultTargetZone       = 200
+	DefaultMinAmplitude     = 1.0
+	DefaultFanOut           = 20
+	DefaultTargetZone       = 300
 )
 
 // Fingerprint computes the full fingerprint of an audio signal.

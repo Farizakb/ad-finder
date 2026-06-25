@@ -39,7 +39,6 @@ func FindAdvertInRecord(recordPath, advertPath string) ([]Match, error) {
 }
 
 // FindAdvertWithFingerprint matches a pre-computed recording fingerprint against an ad.
-// Use this in batch mode to avoid re-fingerprinting the same recording for every ad.
 func FindAdvertWithFingerprint(recFP fingerprint.FingerprintMap, advertPath string) ([]Match, error) {
 	advSamples, err := audio.DecodeMono(advertPath, sampleRate)
 	if err != nil {
@@ -62,8 +61,6 @@ func FingerprintRecord(recordPath string) (fingerprint.FingerprintMap, error) {
 }
 
 func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration float64) ([]Match, error) {
-	// BUG FIX: compute total ad hashes from the FULL ad fingerprint,
-	// not just the subset that matched the recording.
 	totalAdvHashes := 0
 	for _, offsets := range advFP {
 		totalAdvHashes += len(offsets)
@@ -73,8 +70,8 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 		return nil, nil
 	}
 
-	// For each matching hash, compute recording_frame - ad_frame = offset.
-	// Real matches cluster at the same offset.
+	// Build offset histogram: for each matching hash, compute
+	// recording_frame - ad_frame. Real matches cluster at one offset.
 	offsetHits := make(map[int]int)
 
 	for hash, advOffsets := range advFP {
@@ -90,10 +87,7 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 		}
 	}
 
-	// BUG FIX: smooth offset histogram with ±1 frame window.
-	// Broadcast timing jitter can spread a single match across adjacent offsets.
-	// Without smoothing, a strong match split across offset=500,501,502 looks
-	// like three weak matches instead of one strong one.
+	// Smooth with ±1 frame window for broadcast timing jitter.
 	smoothed := make(map[int]int)
 	for offset, hits := range offsetHits {
 		sum := hits
@@ -119,11 +113,22 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 		return candidates[i].hits > candidates[j].hits
 	})
 
-	// Adaptive threshold: at least 5% of total ad hashes, minimum 5 absolute.
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	// Compute median hits across all offsets for relative dominance check.
+	median := candidates[len(candidates)/2].hits
+
+	// Adaptive threshold: minimum absolute hits.
 	minHits := totalAdvHashes / 20
 	if minHits < 5 {
 		minHits = 5
 	}
+
+	// Dominance ratio: a real match should be significantly above the noise floor.
+	// Require the candidate to be at least 3x the median offset hit count.
+	minDominance := 3.0
 
 	secsPerFrame := float64(fingerprint.DefaultHopSize) / float64(sampleRate)
 
@@ -133,12 +138,25 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 			break
 		}
 
+		// Relative dominance check: skip if not clearly above noise.
+		if median > 0 && float64(c.hits)/float64(median) < minDominance {
+			continue
+		}
+
 		timeSec := float64(c.offset) * secsPerFrame
 		if timeSec < 0 {
 			continue
 		}
 
-		confidence := float64(c.hits) / float64(totalAdvHashes)
+		// Confidence = peak-to-noise ratio, normalized.
+		// Uses the ratio of this offset's hits to the median, scaled into [0,1].
+		var confidence float64
+		if median > 0 {
+			ratio := float64(c.hits) / float64(median)
+			confidence = 1.0 - 1.0/ratio
+		} else {
+			confidence = 1.0
+		}
 		if confidence > 1.0 {
 			confidence = 1.0
 		}
