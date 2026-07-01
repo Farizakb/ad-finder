@@ -70,8 +70,6 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 		return nil, nil
 	}
 
-	// Build offset histogram: for each matching hash, compute
-	// recording_frame - ad_frame. Real matches cluster at one offset.
 	offsetHits := make(map[int]int)
 
 	for hash, advOffsets := range advFP {
@@ -100,14 +98,14 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 		smoothed[offset] = sum
 	}
 
-	// Sort candidates by hit count descending.
 	type candidate struct {
-		offset int
-		hits   int
+		offset  int
+		hits    int // smoothed, used for ranking and dominance check
+		rawHits int // unsmoothed, used for confidence
 	}
 	var candidates []candidate
 	for offset, hits := range smoothed {
-		candidates = append(candidates, candidate{offset, hits})
+		candidates = append(candidates, candidate{offset, hits, offsetHits[offset]})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].hits > candidates[j].hits
@@ -117,18 +115,14 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 		return nil, nil
 	}
 
-	// Compute median hits across all offsets for relative dominance check.
 	median := candidates[len(candidates)/2].hits
 
-	// Adaptive threshold: minimum absolute hits.
 	minHits := totalAdvHashes / 20
 	if minHits < 5 {
 		minHits = 5
 	}
 
-	// Dominance ratio: a real match should be significantly above the noise floor.
-	// Require the candidate to be at least 3x the median offset hit count.
-	minDominance := 3.0
+	const minDominance = 3.0
 
 	secsPerFrame := float64(fingerprint.DefaultHopSize) / float64(sampleRate)
 
@@ -138,7 +132,6 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 			break
 		}
 
-		// Relative dominance check: skip if not clearly above noise.
 		if median > 0 && float64(c.hits)/float64(median) < minDominance {
 			continue
 		}
@@ -148,15 +141,7 @@ func matchFingerprints(recFP, advFP fingerprint.FingerprintMap, advDuration floa
 			continue
 		}
 
-		// Confidence = peak-to-noise ratio, normalized.
-		// Uses the ratio of this offset's hits to the median, scaled into [0,1].
-		var confidence float64
-		if median > 0 {
-			ratio := float64(c.hits) / float64(median)
-			confidence = 1.0 - 1.0/ratio
-		} else {
-			confidence = 1.0
-		}
+		confidence := float64(c.rawHits) / float64(totalAdvHashes)
 		if confidence > 1.0 {
 			confidence = 1.0
 		}

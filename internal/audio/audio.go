@@ -1,11 +1,13 @@
 package audio
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
 	"os/exec"
+	"strings"
 )
 
 // DecodeMono decodes an audio file to mono PCM samples at the given sample rate.
@@ -22,6 +24,9 @@ func DecodeMono(path string, sampleRate int) ([]float64, error) {
 		"pipe:1",
 	)
 
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -37,7 +42,10 @@ func DecodeMono(path string, sampleRate int) ([]float64, error) {
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("ffmpeg exit: %w", err)
+		if msg := strings.TrimSpace(stderrBuf.String()); msg != "" {
+			return nil, fmt.Errorf("ffmpeg: %w\n%s", err, msg)
+		}
+		return nil, fmt.Errorf("ffmpeg: %w", err)
 	}
 
 	numSamples := len(raw) / 2

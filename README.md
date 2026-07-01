@@ -29,14 +29,14 @@ MP3 file ──→ FFmpeg decode ──→ Spectrogram (STFT) ──→ Peak ext
 **Step 4 — Hash generation.** Each peak is paired with up to 20 nearby future peaks within a 300-frame target zone. Each pair encodes three values into a 32-bit hash:
 
 ```
-hash = (freq_anchor : 10 bits) << 22 | (freq_target : 10 bits) << 12 | (delta_time : 12 bits)
+hash = (freq_anchor : 11 bits) << 21 | (freq_target : 11 bits) << 10 | (delta_time : 10 bits)
 ```
 
 A single frequency peak is common across many audio clips. But the combination of two specific frequencies at a specific time gap is highly distinctive — like a DNA marker for that audio segment.
 
 **Step 5 — Matching.** For every hash in the ad that also appears in the recording, the algorithm computes `time_in_recording - time_in_ad` = a candidate time offset. If the ad truly appears in the recording, hundreds of hashes will agree on the same offset — producing a sharp spike in the offset histogram, while random collisions scatter across many offsets.
 
-**Step 6 — Scoring.** Matches are scored by **peak-to-noise dominance**: the ratio of the best offset's hit count to the median across all offsets. Real matches produce ratios of 100–1000x, yielding 99%+ confidence. Candidates must exceed both an absolute minimum (5 hits or 5% of the ad's total hashes) and a 3x dominance threshold over the noise floor. Nearby detections within half the ad duration are merged.
+**Step 6 — Scoring.** Matches are scored by two criteria: a dominance check (offset hit count must be ≥ 3× the median across all candidate offsets — rejects noise) and a confidence score (`raw_hits / total_ad_hashes`) representing the fraction of ad fingerprints found at this offset. In practice, broadcast MP3 compression and resampling preserve 4–20% of the original fingerprint hashes, so real-match confidence typically falls in the 0.04–0.20 range. Nearby detections within half the ad duration are merged.
 
 ### Algorithm Parameters
 
@@ -49,29 +49,28 @@ A single frequency peak is common across many audio clips. But the combination o
 | Peak selection | Top-3 per band, 6 bands | Volume-invariant; consistent density regardless of loudness |
 | Fan-out | 20 pairs per anchor | Dense fingerprints; critical for short ads (< 5s) |
 | Target zone | 300 frames (~28s) | Sufficient lookahead for combinatorial uniqueness |
-| Min amplitude | 1.0 dB | Low floor; relative selection handles the rest |
 | Match threshold | max(5, total_hashes/20) | Adaptive to ad length |
 | Dominance threshold | 3x median | Rejects noise-level coincidences |
 
 ## Performance
 
-Tested on real broadcast radio data:
+Tested on 64 recordings (61 min each, 15 stations) with 2 reference ad clips:
 
 | Metric | Value |
 |---|---|
-| Recall | 100% on test data (5/5 known occurrences found) |
-| False positives | 0 (no cross-station false matches) |
-| Confidence on real matches | 99.4% – 99.9% |
+| Xezer ad (4.2s) detected | 4/4 xezer_fm recordings, 0 detections on other stations |
+| Hilfan ad (15s) detected | 9 recordings across yurd_fm, real_fm, enerji_fm, tmb (ad runs on multiple stations) |
+| Confidence on real matches | 0.04 – 0.20 (fraction of ad hashes surviving broadcast compression) |
+| Self-match confidence | 1.0 (ad matched against itself) |
 | Shortest ad detected | 4.2 seconds |
 | Timestamp accuracy | < 1 second |
-| Batch matching speed | ~30 pairs/sec (after fingerprinting) |
-| Fingerprint time (61-min file) | ~25 seconds |
+| Batch throughput | 128 pairs in 14m37s (fingerprinting dominates; ~25s per 61-min file) |
 
 ### Resource Usage
 
 | Resource | Single pair | Batch (20 recordings × 3,000 ads) |
 |---|---|---|
-| Memory | ~500 MB peak | ~2–4 GB (controlled by `--workers`) |
+| Memory | ~500 MB peak | ~500 MB per recording (one in memory at a time) |
 | CPU | Single-threaded decode + fingerprint | Parallel matching via goroutines |
 | Disk | No temp files | No temp files |
 | External deps | ffmpeg on PATH | ffmpeg on PATH |
@@ -91,9 +90,9 @@ Output:
 Record: recording_001.mp3
 Advert: ad_clip_01.mp3
 Result: 3 match(es)
-  1) 06:03.90  duration=4.2s  confidence=0.9962
-  2) 21:30.10  duration=4.2s  confidence=0.9964
-  3) 39:38.84  duration=4.2s  confidence=0.9946
+  1) 06:03.90  duration=4.2s  confidence=0.12
+  2) 21:30.10  duration=4.2s  confidence=0.16
+  3) 39:38.84  duration=4.2s  confidence=0.11
 ```
 
 ### JSON output
@@ -107,7 +106,7 @@ Result: 3 match(es)
   {
     "TimeSec": 363.9,
     "DurationSec": 4.18,
-    "Confidence": 0.9962
+    "Confidence": 0.12
   }
 ]
 ```
@@ -125,13 +124,12 @@ Result: 3 match(es)
 Processes all recording × ad combinations in parallel using goroutines. Reports throughput on stderr:
 
 ```
-Batch: 20 recordings × 50 adverts = 1000 pairs, 8 workers
-Fingerprinting 20 recordings...
-  ✓ recording_001.mp3
-  ✓ recording_002.mp3
-  ...
+Batch: 20 recordings × 50 adverts, 8 workers
+[1/20] recording_001.mp3
+[2/20] recording_002.mp3
+...
 
-Completed 1000 pairs in 12.4s (80.65 pairs/sec)
+Completed 1000 pairs in 12.4s (80.6 pairs/sec)
 ```
 
 ## Interface
@@ -171,12 +169,15 @@ go test ./internal/finder/ -v -timeout 300s
 ```
 
 Tests include:
-- `TestFoundMultiple` — verifies all known occurrences are found
-- `TestNotFound` — verifies recordings without the ad return an empty result
+- `TestMatchFingerprintsFindsInjectedAd` — verifies offset detection and confidence with hand-built fingerprint maps (no audio files)
+- `TestMatchFingerprintsEmptyRecording` — verifies empty recording returns no matches
+- `TestMatchFingerprintsNoSharedHashes` — verifies zero shared hashes returns no matches
 - `TestSpectrogramBasic` — validates FFT output shape and peak location on a synthetic 440 Hz tone
 - `TestFindPeaksFindsLocalMaxima` — validates 2D local maximum filter
 - `TestGenerateHashesProducesHashes` — validates peak pairing produces hashes
 - `TestFingerprintEndToEnd` — validates the full pipeline on a multi-tone signal
+- `TestFoundMultiple` — verifies all known occurrences are found (requires real audio via env vars)
+- `TestNotFound` — verifies recordings without the ad return empty (requires real audio via env vars)
 
 ## Project Structure
 
@@ -225,7 +226,7 @@ Extract learned embeddings via a neural network and compare via cosine similarit
 ## Known Limitations
 
 - **ffmpeg dependency** — required on PATH for audio decoding; no pure-Go MP3 decoder is used to ensure compatibility with all codec variants and bitrates
-- **Memory** — a 61-minute recording at 11,025 Hz produces ~40M samples (~320 MB PCM). The spectrogram, peak list, and hash tables add overhead. In batch mode, control memory via the `--workers` flag
+- **Memory** — a 61-minute recording at 11,025 Hz produces ~40M samples (~320 MB PCM). The spectrogram, peak list, and hash tables add overhead. In batch mode, recordings are processed one at a time so peak memory stays constant regardless of corpus size; `--workers` controls ad-matching concurrency within each recording
 - **Highly distorted audio** — the algorithm handles MP3 compression artifacts, moderate background noise, and volume normalization well. Extreme time-stretching, pitch-shifting, or heavy dynamic compression may degrade recall
 - **Very short ads (< 3s)** — produce fewer fingerprint hashes, reducing the signal-to-noise ratio in the offset histogram. The adaptive threshold compensates, but recall may drop for clips under 3 seconds
 - **Overlapping ads** — if two different ads share a long segment of identical audio, both may produce matches at the same offset. The confidence score helps distinguish genuine from coincidental matches

@@ -54,16 +54,23 @@ func TestFindPeaksFindsLocalMaxima(t *testing.T) {
 	spec := make([][]float64, 10)
 	for i := range spec {
 		spec[i] = make([]float64, 10)
+		for j := range spec[i] {
+			spec[i][j] = float64(i*10+j) * 0.1 // distinct values so no ties
+		}
 	}
-	spec[5][5] = 50.0
+	spec[5][5] = 50.0 // clear dominant peak
 
-	peaks := FindPeaks(spec, 3, 1.0)
+	peaks := FindPeaks(spec, 3)
 
-	if len(peaks) != 1 {
-		t.Fatalf("expected 1 peak, got %d", len(peaks))
+	found := false
+	for _, p := range peaks {
+		if p.Frame == 5 && p.Bin == 5 {
+			found = true
+			break
+		}
 	}
-	if peaks[0].Frame != 5 || peaks[0].Bin != 5 {
-		t.Errorf("expected peak at (5,5), got (%d,%d)", peaks[0].Frame, peaks[0].Bin)
+	if !found {
+		t.Errorf("expected dominant peak at (5,5) to be found, got %v", peaks)
 	}
 }
 

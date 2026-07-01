@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/farizakb/ad-finder/internal/finder"
-	"github.com/farizakb/ad-finder/internal/fingerprint"
 )
 
 func main() {
@@ -64,82 +63,73 @@ func runBatch(recordsDir, advertsDir string, numWorkers int, outputFmt string) {
 		log.Fatalf("No MP3 files found in %s", advertsDir)
 	}
 
-	totalPairs := len(records) * len(adverts)
-	fmt.Fprintf(os.Stderr, "Batch: %d recordings × %d adverts = %d pairs, %d workers\n",
-		len(records), len(adverts), totalPairs, numWorkers)
-
-	// Pre-fingerprint all recordings once (the expensive part),
-	// then reuse each fingerprint across all ads.
-	fmt.Fprintf(os.Stderr, "Fingerprinting %d recordings...\n", len(records))
-	recFPs := make(map[string]fingerprint.FingerprintMap)
-	for _, rec := range records {
-		fp, err := finder.FingerprintRecord(rec)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error fingerprinting %s: %v\n", filepath.Base(rec), err)
-			continue
-		}
-		recFPs[rec] = fp
-		fmt.Fprintf(os.Stderr, "  ✓ %s\n", filepath.Base(rec))
-	}
-
-	type pair struct {
-		record string
-		recFP  fingerprint.FingerprintMap
-		advert string
-	}
-	work := make(chan pair, totalPairs)
-	for rec, fp := range recFPs {
-		for _, adv := range adverts {
-			work <- pair{rec, fp, adv}
-		}
-	}
-	close(work)
+	fmt.Fprintf(os.Stderr, "Batch: %d recordings × %d adverts, %d workers\n",
+		len(records), len(adverts), numWorkers)
 
 	var mu sync.Mutex
-	var results []BatchResult
-	var wg sync.WaitGroup
+	var actualPairs int
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
 
 	start := time.Now()
 
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for p := range work {
-				matches, err := finder.FindAdvertWithFingerprint(p.recFP, p.advert)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error processing %s × %s: %v\n",
-						filepath.Base(p.record), filepath.Base(p.advert), err)
-					continue
+	for i, rec := range records {
+		fmt.Fprintf(os.Stderr, "[%d/%d] %s\n", i+1, len(records), filepath.Base(rec))
+
+		fp, err := finder.FingerprintRecord(rec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  skip: %v\n", err)
+			continue
+		}
+
+		work := make(chan string, len(adverts))
+		for _, adv := range adverts {
+			work <- adv
+		}
+		close(work)
+
+		var recResults []BatchResult
+		var wg sync.WaitGroup
+		for j := 0; j < numWorkers; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for adv := range work {
+					matches, err := finder.FindAdvertWithFingerprint(fp, adv)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "  error %s: %v\n", filepath.Base(adv), err)
+						continue
+					}
+					mu.Lock()
+					recResults = append(recResults, BatchResult{
+						Record:  rec,
+						Advert:  adv,
+						Matches: matches,
+					})
+					actualPairs++
+					mu.Unlock()
 				}
+			}()
+		}
+		wg.Wait()
 
-				mu.Lock()
-				results = append(results, BatchResult{
-					Record:  p.record,
-					Advert:  p.advert,
-					Matches: matches,
-				})
-				mu.Unlock()
+		// Flush this recording's results immediately so progress is not lost on crash.
+		if outputFmt == "json" {
+			for _, r := range recResults {
+				enc.Encode(r)
 			}
-		}()
-	}
-
-	wg.Wait()
-	elapsed := time.Since(start)
-
-	pairsPerSec := float64(totalPairs) / elapsed.Seconds()
-	fmt.Fprintf(os.Stderr, "\nCompleted %d pairs in %s (%.2f pairs/sec)\n",
-		totalPairs, elapsed.Round(time.Millisecond), pairsPerSec)
-
-	if outputFmt == "json" {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(results)
-	} else {
-		for _, r := range results {
-			printMatches(r.Record, r.Advert, r.Matches, "text")
+		} else {
+			for _, r := range recResults {
+				printMatches(r.Record, r.Advert, r.Matches, "text")
+			}
 		}
 	}
+
+	elapsed := time.Since(start)
+	pairsPerSec := float64(actualPairs) / elapsed.Seconds()
+	fmt.Fprintf(os.Stderr, "\nCompleted %d pairs in %s (%.1f pairs/sec)\n",
+		actualPairs, elapsed.Round(time.Millisecond), pairsPerSec)
 }
 
 func listMP3s(dir string) []string {

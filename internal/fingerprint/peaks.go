@@ -16,10 +16,9 @@ const (
 )
 
 // FindPeaks extracts local maxima from the spectrogram using relative thresholding.
-// Instead of an absolute amplitude threshold (which breaks on volume-normalized radio),
-// we keep the top-K loudest local maxima per frequency band per frame group.
-// This ensures consistent peak density regardless of recording volume.
-func FindPeaks(spectrogram [][]float64, neighborhoodSize int, minAmplitude float64) []Peak {
+// Top-K loudest local maxima per frequency band per frame are kept, making peak
+// density invariant to recording volume without an absolute amplitude floor.
+func FindPeaks(spectrogram [][]float64, neighborhoodSize int) []Peak {
 	if len(spectrogram) == 0 {
 		return nil
 	}
@@ -27,7 +26,6 @@ func FindPeaks(spectrogram [][]float64, neighborhoodSize int, minAmplitude float
 	numFrames := len(spectrogram)
 	numBins := len(spectrogram[0])
 
-	// Step 1: find all local maxima (points greater than all neighbors).
 	type scored struct {
 		frame, bin int
 		val        float64
@@ -37,11 +35,6 @@ func FindPeaks(spectrogram [][]float64, neighborhoodSize int, minAmplitude float
 	for frame := 0; frame < numFrames; frame++ {
 		for bin := 0; bin < numBins; bin++ {
 			val := spectrogram[frame][bin]
-
-			// Absolute floor — reject silence/near-silence regardless.
-			if val < minAmplitude {
-				continue
-			}
 
 			isPeak := true
 
@@ -67,7 +60,7 @@ func FindPeaks(spectrogram [][]float64, neighborhoodSize int, minAmplitude float
 					if f == frame && b == bin {
 						continue
 					}
-					if spectrogram[f][b] >= val {
+					if spectrogram[f][b] > val {
 						isPeak = false
 						break
 					}
@@ -80,14 +73,12 @@ func FindPeaks(spectrogram [][]float64, neighborhoodSize int, minAmplitude float
 		}
 	}
 
-	// Step 2: for each frame group, keep only top-K peaks per frequency band.
-	// This makes peak density relative to local content, not absolute volume.
+	// Step 2: keep only top-K peaks per frequency band per frame.
 	bandSize := numBins / numBands
 	if bandSize < 1 {
 		bandSize = 1
 	}
 
-	// Group maxima by frame and band, keep strongest per group.
 	type groupKey struct {
 		frame, band int
 	}

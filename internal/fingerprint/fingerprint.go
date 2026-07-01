@@ -7,7 +7,6 @@ const (
 	DefaultWindowSize       = 4096
 	DefaultHopSize          = 1024
 	DefaultNeighborhoodSize = 10
-	DefaultMinAmplitude     = 1.0
 	DefaultFanOut           = 20
 	DefaultTargetZone       = 300
 )
@@ -15,16 +14,14 @@ const (
 // Fingerprint computes the full fingerprint of an audio signal.
 // samples should be mono PCM at 11025 Hz.
 func Fingerprint(samples []float64) FingerprintMap {
-	return FingerprintWithParams(samples,
-		DefaultWindowSize, DefaultHopSize,
-		DefaultNeighborhoodSize, DefaultMinAmplitude,
-		DefaultFanOut, DefaultTargetZone,
-	)
+	spec := Spectrogram(samples, DefaultWindowSize, DefaultHopSize)
+	peaks := FindPeaks(spec, DefaultNeighborhoodSize)
+	return GenerateHashes(peaks, DefaultFanOut, DefaultTargetZone)
 }
 
 // FingerprintWithParams computes fingerprints with custom parameters.
-func FingerprintWithParams(samples []float64, windowSize, hopSize, neighborhoodSize int, minAmplitude float64, fanOut, targetZone int) FingerprintMap {
-	spec := Spectrogram(samples, windowSize, hopSize)
-	peaks := FindPeaks(spec, neighborhoodSize, minAmplitude)
-	return GenerateHashes(peaks, fanOut, targetZone)
-}
+// func FingerprintWithParams(samples []float64, windowSize, hopSize, neighborhoodSize, fanOut, targetZone int) FingerprintMap {
+// 	spec := Spectrogram(samples, windowSize, hopSize)
+// 	peaks := FindPeaks(spec, neighborhoodSize)
+// 	return GenerateHashes(peaks, fanOut, targetZone)
+// }
